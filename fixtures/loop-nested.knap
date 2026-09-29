@@ -1,0 +1,6 @@
+{% for section in sections %}
++ {{ section.title }}:
+{% for item in section.items %}
+  = {{ item }}
+{% endfor %}
+{% endfor %}

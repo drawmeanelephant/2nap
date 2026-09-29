@@ -1,0 +1,3 @@
+{% for n in nums %}
+{{ loop.index }}/{{ loop.length }}{% if loop.last %} END{% endif %}
+{% endfor %}
