@@ -85,7 +85,9 @@ pub fn main(init: std.process.Init) !u8 {
     };
 
     var stdout_buf: [4096]u8 = undefined;
-    var w = std.Io.File.Writer.init(std.Io.File.stdout(), io, &stdout_buf);
+    // Streaming mode: stdout may be a pipe or an appended-to file; positional
+    // writes would clobber bytes written there by others.
+    var w = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_buf);
     w.interface.writeAll(out.items) catch |e| {
         return fail(io, alloc, "cannot write to stdout: {s}", .{@errorName(e)});
     };
@@ -98,7 +100,7 @@ pub fn main(init: std.process.Init) !u8 {
 fn fail(io: std.Io, alloc: std.mem.Allocator, comptime fmt: []const u8, args: anytype) noreturn {
     const msg = std.fmt.allocPrint(alloc, "knap-textile: error: " ++ fmt ++ "\n", args) catch "knap-textile: error\n";
     var buf: [4096]u8 = undefined;
-    var w = std.Io.File.Writer.init(std.Io.File.stderr(), io, &buf);
+    var w = std.Io.File.Writer.initStreaming(std.Io.File.stderr(), io, &buf);
     w.interface.writeAll(msg) catch {};
     w.flush() catch {};
     std.process.exit(1);
