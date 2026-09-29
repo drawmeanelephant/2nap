@@ -64,6 +64,31 @@ else
     bad "syntax error handling (rc=$rc stdout=$(wc -c < /tmp/kt-e.out) bytes stderr='$got_msg')"
 fi
 
+# every positive fixture through the real binary, byte-for-byte
+cli_ok=0
+cli_total=0
+cli_fail_first=""
+for textile in fixtures/*.textile; do
+    stem="${textile%.textile}"
+    if [ ! -f "$stem.knap" ]; then continue; fi
+    cli_total=$((cli_total+1))
+    if [ -f "$stem.json" ]; then
+        "$BIN" render "$stem.knap" --data "$stem.json" > /tmp/kt-fx.out 2>/dev/null
+    else
+        "$BIN" render "$stem.knap" > /tmp/kt-fx.out 2>/dev/null
+    fi
+    if cmp -s /tmp/kt-fx.out "$textile"; then
+        cli_ok=$((cli_ok+1))
+    elif [ -z "$cli_fail_first" ]; then
+        cli_fail_first="$stem"
+    fi
+done
+if [ "$cli_ok" -eq "$cli_total" ]; then
+    ok "CLI byte-exact on all $cli_total positive fixtures"
+else
+    bad "CLI byte-exact on fixtures ($cli_ok/$cli_total, first failure: $cli_fail_first)"
+fi
+
 # bad data: non-zero exit
 printf '{ broken' > /tmp/kt-bad.json
 "$BIN" render examples/heading.knap --data /tmp/kt-bad.json > /tmp/kt-bad.out 2> /tmp/kt-bad.err
