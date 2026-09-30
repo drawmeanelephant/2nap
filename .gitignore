@@ -2,3 +2,4 @@
 zig-out/
 .zcode/
 .DS_Store
+.freebuff/
