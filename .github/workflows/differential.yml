@@ -1,0 +1,35 @@
+name: Differential conformance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    name: Differential (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.16.0
+      - name: Check formatting and 2nap regressions
+        run: |
+          zig fmt --check build.zig tests.zig src
+          zig build test
+          zig build -Doptimize=ReleaseSafe
+      - name: Test the differential harness
+        run: python3 -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Build pinned black-box oracle (no source or diagnostics displayed)
+        run: python3 tools/build_oracle.py
+      - name: Compare the entire shared corpus
+        run: python3 tools/differential.py

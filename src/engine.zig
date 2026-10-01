@@ -90,8 +90,8 @@ const Engine = struct {
                         return self.failAt(
                             .render,
                             f.pos,
-                            "for-loop expects an array to iterate, but got a {s}",
-                            .{typeName(list)},
+                            "for-loop expects an array to iterate, but got {s}{s}",
+                            .{ article(list), typeName(list) },
                         );
                     }
                     const items = list.array.items;
@@ -103,9 +103,9 @@ const Engine = struct {
                         try loop_obj.put(self.arena, "last", .{ .bool = i + 1 == items.len });
                         try loop_obj.put(self.arena, "length", .{ .integer = @intCast(items.len) });
 
-                        const item_frame = Env{ .parent = env, .name = f.iter, .val = item };
-                        const loop_frame = Env{ .parent = &item_frame, .name = "loop", .val = .{ .object = loop_obj } };
-                        try self.renderNodes(f.body, &loop_frame);
+                        const loop_frame = Env{ .parent = env, .name = "loop", .val = .{ .object = loop_obj } };
+                        const item_frame = Env{ .parent = &loop_frame, .name = f.iter, .val = item };
+                        try self.renderNodes(f.body, &item_frame);
                     }
                 },
             }
@@ -213,7 +213,7 @@ const Engine = struct {
                     .h6 => '6',
                     else => unreachable,
                 };
-                const text = try self.scalarText(input);
+                const text = try self.singleLine(input, call, call.name);
                 const prefix = try std.fmt.allocPrint(self.arena, "h{c}. ", .{level});
                 return .{ .string = try std.mem.concat(self.arena, u8, &.{ prefix, text }) };
             },
@@ -230,20 +230,11 @@ const Engine = struct {
                 return .{ .string = try std.mem.concat(self.arena, u8, &.{ "@", text, "@" }) };
             },
             .blockquote => {
-                const text = try self.scalarText(input);
-                var buf: std.ArrayList(u8) = .empty;
-                var it = std.mem.splitScalar(u8, text, '\n');
-                var first = true;
-                while (it.next()) |line| {
-                    if (!first) try buf.append(self.arena, '\n');
-                    first = false;
-                    try buf.appendSlice(self.arena, "bq. ");
-                    try buf.appendSlice(self.arena, line);
-                }
-                return .{ .string = try buf.toOwnedSlice(self.arena) };
+                const text = try self.singleLine(input, call, call.name);
+                return .{ .string = try std.mem.concat(self.arena, u8, &.{ "bq. ", text }) };
             },
             .codeblock => {
-                const text = try self.scalarText(input);
+                const text = try self.filterText(input, call);
                 var buf: std.ArrayList(u8) = .empty;
                 try buf.appendSlice(self.arena, "bc. ");
                 try buf.appendSlice(self.arena, text);
@@ -251,15 +242,23 @@ const Engine = struct {
             },
             .link => {
                 const text = try self.singleLine(input, call, "link");
-                const url = switch (call.arg.?) {
-                    .string => |s| s,
-                    else => |other| try self.argText(other),
-                };
+                if (std.mem.indexOfScalar(u8, text, '"') != null) {
+                    return self.failAt(.render, call.pos, "filter 'link' text must not contain a double quote", .{});
+                }
+                const url = try self.argText(call.arg.?, call);
+                if (url.len == 0) {
+                    return self.failAt(.bad_argument, call.pos, "filter 'link' URL must not be empty", .{});
+                }
+                for (url) |ch| {
+                    if (std.ascii.isWhitespace(ch) or ch == '"') {
+                        return self.failAt(.bad_argument, call.pos, "filter 'link' URL must not contain whitespace or a double quote", .{});
+                    }
+                }
                 if (unsafeScheme(url)) |scheme| {
                     return self.failAt(
-                        .render,
+                        .bad_argument,
                         call.pos,
-                        "filter 'link' refuses unsafe URL scheme \"{s}\"",
+                        "filter 'link' refuses the URL scheme '{s}', which can execute script in the Textile renderer",
                         .{scheme},
                     );
                 }
@@ -275,8 +274,8 @@ const Engine = struct {
                     return self.failAt(
                         .render,
                         call.pos,
-                        "filter '{s}' expects an array, but got a {s}",
-                        .{ call.name, typeName(input) },
+                        "filter '{s}' expects an array, but got {s}{s}",
+                        .{ call.name, article(input), typeName(input) },
                     );
                 }
                 var buf: std.ArrayList(u8) = .empty;
@@ -288,8 +287,8 @@ const Engine = struct {
                     return self.failAt(
                         .render,
                         call.pos,
-                        "filter 'table' expects an array, but got a {s}",
-                        .{typeName(input)},
+                        "filter 'table' expects an array of rows, but got {s}{s}",
+                        .{ article(input), typeName(input) },
                     );
                 }
                 return self.emitTable(input.array.items, call);
@@ -298,11 +297,20 @@ const Engine = struct {
     }
 
     fn singleLine(self: *Engine, input: std.json.Value, call: parse.FilterCall, name: []const u8) Error![]const u8 {
-        const text = try self.scalarText(input);
+        const text = try self.filterText(input, call);
         if (std.mem.indexOfScalar(u8, text, '\n') != null) {
             return self.failAt(.render, call.pos, "filter '{s}' expects single-line text", .{name});
         }
         return text;
+    }
+
+    fn filterText(self: *Engine, input: std.json.Value, call: parse.FilterCall) Error![]const u8 {
+        if (input == .array or input == .object) {
+            return self.failAt(.render, call.pos, "filter '{s}' expects a text value, but got {s}{s}", .{
+                call.name, article(input), typeName(input),
+            });
+        }
+        return self.scalarText(input);
     }
 
     /// `* item` / `# item` lines; nested arrays deepen the marker, max 3 levels.
@@ -328,6 +336,9 @@ const Engine = struct {
                 }
                 try self.emitList(item.array.items, marker, depth + 1, call, buf);
             } else {
+                if (item == .object) {
+                    return self.failAt(.render, call.pos, "filter '{s}' expects list items to be text or nested arrays", .{call.name});
+                }
                 if (buf.items.len > 0) try buf.append(self.arena, '\n');
                 var d: usize = 0;
                 while (d < depth) : (d += 1) try buf.append(self.arena, marker);
@@ -340,23 +351,26 @@ const Engine = struct {
     fn emitTable(self: *Engine, rows: []const std.json.Value, call: parse.FilterCall) Error!std.json.Value {
         var buf: std.ArrayList(u8) = .empty;
         if (rows.len == 0) {
-            return .{ .string = try buf.toOwnedSlice(self.arena) };
+            return self.failAt(.render, call.pos, "filter 'table' expects at least one row", .{});
         }
         const header = rows[0];
         if (header != .array) {
             return self.failAt(
                 .render,
                 call.pos,
-                "filter 'table' expects every row to be an array, but the header row is a {s}",
-                .{typeName(header)},
+                "filter 'table' expects each row to be an array of cells",
+                .{},
             );
         }
         const width = header.array.items.len;
+        if (width == 0) {
+            return self.failAt(.render, call.pos, "filter 'table' expects at least one cell per row", .{});
+        }
 
         try buf.appendSlice(self.arena, "|_. ");
         for (header.array.items, 0..) |cell, i| {
             if (i > 0) try buf.appendSlice(self.arena, "|_. ");
-            try buf.appendSlice(self.arena, try self.scalarText(cell));
+            try buf.appendSlice(self.arena, try self.tableCell(cell, call));
         }
         try buf.append(self.arena, '|');
 
@@ -365,8 +379,8 @@ const Engine = struct {
                 return self.failAt(
                     .render,
                     call.pos,
-                    "filter 'table' expects every row to be an array, but row {d} is a {s}",
-                    .{ idx + 1, typeName(row) },
+                    "filter 'table' expects each row to be an array of cells",
+                    .{},
                 );
             }
             const cells = row.array.items;
@@ -381,11 +395,25 @@ const Engine = struct {
             try buf.append(self.arena, '\n');
             for (cells) |cell| {
                 try buf.append(self.arena, '|');
-                try buf.appendSlice(self.arena, try self.scalarText(cell));
+                try buf.appendSlice(self.arena, try self.tableCell(cell, call));
             }
             try buf.append(self.arena, '|');
         }
         return .{ .string = try buf.toOwnedSlice(self.arena) };
+    }
+
+    fn tableCell(self: *Engine, cell: std.json.Value, call: parse.FilterCall) Error![]const u8 {
+        if (cell == .object or cell == .array) {
+            return self.failAt(.render, call.pos, "filter 'table' expects text cells", .{});
+        }
+        const text = try self.scalarText(cell);
+        if (std.mem.indexOfScalar(u8, text, '|') != null) {
+            return self.failAt(.render, call.pos, "filter 'table' cell must not contain '|'", .{});
+        }
+        if (std.mem.indexOfScalar(u8, text, '\n') != null) {
+            return self.failAt(.render, call.pos, "filter 'table' cell must not contain a newline", .{});
+        }
+        return text;
     }
 
     // ---- value helpers --------------------------------------------------------
@@ -404,9 +432,18 @@ const Engine = struct {
         };
     }
 
-    fn argText(self: *Engine, arg: parse.FilterArg) Error![]const u8 {
+    fn argText(self: *Engine, arg: parse.FilterArg, call: parse.FilterCall) Error![]const u8 {
         return switch (arg) {
             .string => |s| s,
+            .bare => |name| blk: {
+                const value = objectGet(self.data, name) orelse break :blk name;
+                if (value == .null or value == .array or value == .object) {
+                    return self.failAt(.bad_argument, call.pos, "filter argument '{s}' resolves to {s}{s}, but filter arguments must be text", .{
+                        name, article(value), typeName(value),
+                    });
+                }
+                break :blk try self.scalarText(value);
+            },
             .int => |i| try std.fmt.allocPrint(self.arena, "{d}", .{i}),
             .float => |f| try std.fmt.allocPrint(self.arena, "{d}", .{f}),
         };
@@ -498,7 +535,7 @@ fn unsafeScheme(url: []const u8) ?[]const u8 {
     const schemes = [_][]const u8{ "javascript:", "data:", "vbscript:" };
     for (schemes) |scheme| {
         if (url.len >= scheme.len and std.ascii.eqlIgnoreCase(url[0..scheme.len], scheme)) {
-            return scheme[0 .. scheme.len - 1];
+            return url[0..scheme.len];
         }
     }
     return null;
@@ -513,7 +550,7 @@ pub fn truthy(v: std.json.Value) bool {
         .number_string => |s| s.len > 0 and std.mem.eql(u8, s, "0") == false,
         .string => |s| s.len > 0,
         .array => |a| a.items.len > 0,
-        .object => |o| o.count() > 0,
+        .object => true,
     };
 }
 
@@ -528,7 +565,16 @@ pub fn typeName(v: std.json.Value) []const u8 {
     };
 }
 
+fn article(v: std.json.Value) []const u8 {
+    return switch (v) {
+        .null => "",
+        .array, .object => "an ",
+        else => "a ",
+    };
+}
+
 pub fn deepEqual(a: std.json.Value, b: std.json.Value) bool {
+    if (a == .integer and b == .integer) return a.integer == b.integer;
     const pair = struct {
         fn num(x: std.json.Value) ?f64 {
             return switch (x) {
@@ -569,6 +615,7 @@ pub fn deepEqual(a: std.json.Value, b: std.json.Value) bool {
 }
 
 fn compare(a: std.json.Value, b: std.json.Value) ?std.math.Order {
+    if (a == .integer and b == .integer) return std.math.order(a.integer, b.integer);
     const an: ?f64 = switch (a) {
         .integer => |i| @floatFromInt(i),
         .float => |f| f,

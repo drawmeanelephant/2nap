@@ -1,5 +1,32 @@
 # Verification report
 
+## Black-box differential pass — 2026-09-30
+
+Local host: macOS (Darwin 27.2.0), Zig 0.16.0.
+Oracle: k4o `942ebf32ed89eca8d195b04068118a9ee62706c6`, compiled opaquely.
+Only its README and executable behavior were consulted, never its source.
+
+| Check | Result |
+| --- | --- |
+| `zig fmt --check build.zig tests.zig src` | pass |
+| `zig build test --summary all` | 17/17 tests passed |
+| `zig build -Doptimize=ReleaseSafe` | pass |
+| `python3 -m unittest discover -s tools -p 'test_*.py' -v` | 11/11 harness tests passed |
+| `python3 tools/differential.py --report differential-report.json` | 2,703 cases, zero divergences |
+| Same harness against baseline 2nap `689eff9` | 2,703 cases, 233 divergences, exit 1 (red-green proof) |
+| `git diff --exit-code -- fixtures examples` | pass, original corpus unchanged |
+| `git diff --check` | pass |
+
+Hosted Linux/macOS verification runs the same complete corpus in
+`.github/workflows/differential.yml`; consult the PR's `Differential` checks
+for hosted results. No source or compiler diagnostics from k4o are exposed
+in CI logs.
+
+The historical `tools/verify.sh` mutant script was not rerun during this
+pass because it rewrites/restores fixture files. Instead, the differential
+suite's red-green proof built baseline 2nap in an isolated temporary
+directory, leaving the corpus untouched.
+
 Raw check output, captured verbatim. Pass 1 ran after the implementation
 milestone; pass 2 is the second pass (clean caches, fresh rebuild, full
 re-verification) run before calling the work done.

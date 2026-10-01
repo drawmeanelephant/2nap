@@ -315,3 +315,75 @@ test "every registered filter is a documented-registry member" {
     for (names) |n| try std.testing.expect(filters.lookup(n) != null);
     try std.testing.expect(filters.lookup("nope") == null);
 }
+
+// Regressions from black-box differential observations, not oracle source.
+test "bare filter arguments resolve only at the data root" {
+    try std.testing.expectEqualStrings("\"name\":/root", try renderCase(
+        "{% for url in urls %}{{ x | link:url }}{% endfor %}",
+        "{\"x\":\"name\",\"url\":\"/root\",\"urls\":[\"/local\"]}",
+    ));
+    try std.testing.expectEqualStrings("\"name\":url", try renderCase("{{ x | link:\"url\" }}", "{\"x\":\"name\",\"url\":\"/root\"}"));
+    try std.testing.expectEqualStrings("\"name\":fallback", try renderCase("{{ x | link:fallback }}", "{\"x\":\"name\"}"));
+    for ([_][]const u8{ "null", "[]", "{}" }) |value| {
+        const res = try runCase("{{ x | link:url }}", try std.fmt.allocPrint(gpa, "{{\"x\":\"name\",\"url\":{s}}}", .{value}));
+        try std.testing.expect(res.err != null);
+        try std.testing.expectEqual(diag.Kind.bad_argument, res.err.?.kind);
+    }
+}
+
+test "empty objects are truthy and integer comparisons retain precision" {
+    try std.testing.expect(engine.truthy(.{ .object = std.json.ObjectMap.empty }));
+    try std.testing.expect(!engine.deepEqual(.{ .integer = 9007199254740992 }, .{ .integer = 9007199254740993 }));
+    try std.testing.expectEqualStrings("yes", try renderCase(
+        "{% if a < b %}yes{% else %}no{% endif %}",
+        "{\"a\":9007199254740992,\"b\":9007199254740993}",
+    ));
+}
+
+test "string escapes quote the next byte and bare CR is body text" {
+    try std.testing.expectEqualStrings("anbtbrb", try renderCase("{{ \"a\\nb\\tb\\rb\" }}", "{}"));
+    try std.testing.expectEqualStrings("\rA", try renderCase("{% if true %}\rA{% endif %}", "{}"));
+    try std.testing.expectEqualStrings("A", try renderCase("{% if true %}\r\nA{% endif %}", "{}"));
+    try std.testing.expectEqualStrings("", try renderCase("{% for loop in xs %}{{ loop.index }}{% endfor %}", "{\"xs\":[1,2]}"));
+}
+
+test "phrase filters and codeblocks reject structured inputs" {
+    for ([_][]const u8{ "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "bold", "italic", "code", "codeblock", "link:\"/path\"" }) |filter| {
+        const src = try std.fmt.allocPrint(gpa, "{{{{ x | {s} }}}}", .{filter});
+        for ([_][]const u8{ "{\"x\":[]}", "{\"x\":{}}" }) |data| {
+            try std.testing.expect((try runCase(src, data)).err != null);
+        }
+    }
+    for ([_][]const u8{ "h1", "blockquote", "bold", "italic", "code" }) |filter| {
+        const src = try std.fmt.allocPrint(gpa, "{{{{ x | {s} }}}}", .{filter});
+        try std.testing.expect((try runCase(src, "{\"x\":\"a\\nb\"}")).err != null);
+    }
+    try std.testing.expectEqualStrings("bc. a\nb", try renderCase("{{ x | codeblock }}", "{\"x\":\"a\\nb\"}"));
+}
+
+test "Textile links and tables validate their delimiters" {
+    const cases = [_]struct { src: []const u8, data: []const u8 }{
+        .{ .src = "{{ x | link:\"\" }}", .data = "{\"x\":\"x\"}" },
+        .{ .src = "{{ x | link:\"a b\" }}", .data = "{\"x\":\"x\"}" },
+        .{ .src = "{{ x | link:\"/path\" }}", .data = "{\"x\":\"a\\\"b\"}" },
+        .{ .src = "{{ x | table }}", .data = "{\"x\":[]}" },
+        .{ .src = "{{ x | table }}", .data = "{\"x\":[[]]}" },
+        .{ .src = "{{ x | table }}", .data = "{\"x\":[[\"a|b\"]]}" },
+        .{ .src = "{{ x | table }}", .data = "{\"x\":[[\"a\\nb\"]]}" },
+        .{ .src = "{{ x | list }}", .data = "{\"x\":[{}]}" },
+    };
+    for (cases) |c| try std.testing.expect((try runCase(c.src, c.data)).err != null);
+}
+
+test "logic tags accept multiline whitespace and reject trailing text" {
+    try std.testing.expectEqualStrings("B", try renderCase("{%\nif true\nand false %}A{% else %}B{% endif %}", "{}"));
+    const invalid = [_][]const u8{
+        "{% if true junk %}A{% endif %}",
+        "{% if true %}A{% endif junk %}",
+        "{% if true %}A{% else junk %}B{% endif %}",
+        "{% for x in xs %}A{% endfor junk %}",
+        "{{ x .a }}",
+        "{{ 1e3 }}",
+    };
+    for (invalid) |src| try std.testing.expect((try runCase(src, "{\"xs\":[1]}")).err != null);
+}

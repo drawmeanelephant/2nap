@@ -54,7 +54,7 @@ pub const Expr = union(enum) {
     binary: struct { op: BinOp, lhs: *Expr, rhs: *Expr },
 };
 
-pub const FilterArg = union(enum) { string: []const u8, int: i64, float: f64 };
+pub const FilterArg = union(enum) { string: []const u8, bare: []const u8, int: i64, float: f64 };
 
 pub const FilterCall = struct {
     name: []const u8,
@@ -190,14 +190,12 @@ const Parser = struct {
         }
     }
 
-    /// If the cursor sits on a newline (possibly \r\n), consume exactly one.
+    /// Consume exactly one LF or CRLF. A bare CR is body text.
     fn consumeOneNewline(self: *Parser) void {
         if (self.eof()) return;
         if (self.peek() == '\r') {
             if (self.pos + 1 < self.src.len and self.src[self.pos + 1] == '\n') {
                 self.pos += 2;
-            } else {
-                self.pos += 1;
             }
         } else if (self.peek() == '\n') {
             self.pos += 1;
@@ -297,7 +295,7 @@ const Parser = struct {
                     const close = self.findClose(start + 2, "%}", true) orelse
                         return self.failAt(.syntax, start, "unclosed '{{%' tag (missing '%}}')", .{});
                     self.pos = start + 2;
-                    self.skipSpaces();
+                    self.skipWs();
                     const kw_start = self.pos;
                     while (!self.eof() and std.ascii.isAlphabetic(self.peek())) self.pos += 1;
                     const kw = self.src[kw_start..self.pos];
@@ -317,6 +315,7 @@ const Parser = struct {
                         try nodes.append(self.alloc(), .{ .for_ = node });
                     } else if (std.mem.eql(u8, kw, "elseif") or std.mem.eql(u8, kw, "else") or std.mem.eql(u8, kw, "endif")) {
                         if (until == .if_block) {
+                            if (!std.mem.eql(u8, kw, "elseif")) try self.validateTerminator(close, kw);
                             self.pos = start;
                             return .{
                                 .nodes = try nodes.toOwnedSlice(self.alloc()),
@@ -333,12 +332,13 @@ const Parser = struct {
                         return self.failAt(.syntax, kw_end, "unexpected '{{% {s} %}}' outside an if block", .{kw});
                     } else if (std.mem.eql(u8, kw, "endfor")) {
                         if (until == .for_block) {
+                            try self.validateTerminator(close, kw);
                             self.pos = start;
                             return .{ .nodes = try nodes.toOwnedSlice(self.alloc()), .term = .endfor, .close = close, .kw_end = kw_end };
                         }
                         return self.failAt(.syntax, kw_end, "unexpected '{{% endfor %}}' outside a for block", .{});
                     } else {
-                        return self.failAt(.syntax, kw_end, "unknown tag '{{% {s} %}}'", .{kw});
+                        return self.failAt(.syntax, kw_end, "unknown logic tag '{s}'", .{kw});
                     }
                 },
             }
@@ -351,7 +351,7 @@ const Parser = struct {
         var branches: std.ArrayList(IfBranch) = .empty;
 
         var cond: ?Expr = try self.parseLogicExpr(close);
-        try self.expectBlockClose(close);
+        try self.expectBlockClose(close, "unexpected text after condition");
         self.consumeOneNewline();
 
         while (true) {
@@ -367,7 +367,7 @@ const Parser = struct {
                     // resume just after the elseif keyword, then parse its cond
                     self.pos = res.kw_end;
                     cond = try self.parseLogicExpr(res.close);
-                    try self.expectBlockClose(res.close);
+                    try self.expectBlockClose(res.close, "unexpected text after condition");
                     self.consumeOneNewline();
                 },
                 .else_ => {
@@ -380,7 +380,9 @@ const Parser = struct {
                             self.pos = res2.close + 2;
                             return .{ .pos = open_pos, .branches = try branches.toOwnedSlice(self.alloc()) };
                         },
-                        else => return self.failAt(.syntax, res2.kw_end, "unexpected tag after '{{% else %}}'", .{}),
+                        .else_ => return self.failAt(.syntax, self.pos, "duplicate '{{% else %}}'", .{}),
+                        .elseif => return self.failAt(.syntax, self.pos, "unexpected '{{% elseif %}}' after '{{% else %}}'", .{}),
+                        else => unreachable,
                     }
                 },
             }
@@ -389,21 +391,21 @@ const Parser = struct {
 
     /// Parse `{% for name in expr %}`. Cursor sits just after the `for` keyword.
     fn parseFor(self: *Parser, open_pos: usize, depth: u32, close: usize) Error!For {
-        self.skipSpaces();
+        self.skipWs();
         const name_start = self.pos;
         while (!self.eof() and isWordChar(self.peek())) self.pos += 1;
         const iter = self.src[name_start..self.pos];
         if (iter.len == 0) {
-            return self.failAt(.syntax, self.pos, "expected an iterator name in for tag", .{});
+            return self.failAt(.syntax, self.pos, "expected a loop variable name after 'for'", .{});
         }
-        self.skipSpaces();
+        self.skipWs();
         if (!(self.startsWith("in") and (self.pos + 2 >= self.src.len or !isWordChar(self.src[self.pos + 2])))) {
             return self.failAt(.syntax, self.pos, "expected 'in' in for tag", .{});
         }
         self.pos += 2;
-        self.skipSpaces();
+        self.skipWs();
         const expr = try self.parseLogicExpr(close);
-        try self.expectBlockClose(close);
+        try self.expectBlockClose(close, "unexpected text after the for expression");
         self.consumeOneNewline();
 
         const res = try self.parseBody(.for_block, depth, open_pos);
@@ -413,17 +415,26 @@ const Parser = struct {
 
     /// Consume the `%}` closing the current tag: the cursor must sit on the
     /// '%' (possibly after whitespace).
-    fn expectBlockClose(self: *Parser, close: usize) Error!void {
-        self.skipSpaces();
+    fn expectBlockClose(self: *Parser, close: usize, comptime message: []const u8) Error!void {
+        self.skipWs();
         if (self.pos != close) {
-            return self.failAt(.syntax, self.pos, "expected '%}}'", .{});
+            return self.failAt(.syntax, self.pos, message, .{});
         }
         self.pos = close + 2;
+    }
+
+    fn validateTerminator(self: *Parser, close: usize, keyword: []const u8) Error!void {
+        self.skipWs();
+        if (self.pos != close) {
+            return self.failAt(.syntax, self.pos, "unexpected text in '{{% {s} %}}'", .{keyword});
+        }
     }
 
     // ---- output tags --------------------------------------------------------
 
     fn parseOutput(self: *Parser, open_pos: usize) Error!Output {
+        _ = self.findClose(open_pos + 2, "}}", true) orelse
+            return self.failAt(.syntax, open_pos, "unclosed '{{{{' tag (missing '}}}}')", .{});
         self.pos = open_pos + 2;
         self.skipWs();
         const expr = try self.parseOutputValue();
@@ -472,7 +483,7 @@ const Parser = struct {
         }
 
         if (!self.startsWith("}}")) {
-            return self.failAt(.syntax, open_pos, "unclosed '{{{{' tag (missing '}}}}')", .{});
+            return self.failAt(.syntax, self.pos, "unexpected text in output tag (expected '|' or end of tag)", .{});
         }
         self.pos += 2;
         return .{ .expr = expr, .filters = try calls.toOwnedSlice(self.alloc()) };
@@ -521,13 +532,8 @@ const Parser = struct {
             if (ch == '\\' and self.pos + 1 < self.src.len) {
                 self.pos += 1;
                 const esc = self.src[self.pos];
-                const out: u8 = switch (esc) {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    else => esc,
-                };
-                try buf.append(self.alloc(), out);
+                // Knap string quoting escapes the next byte, not JSON escapes.
+                try buf.append(self.alloc(), esc);
                 self.pos += 1;
                 continue;
             }
@@ -551,13 +557,16 @@ const Parser = struct {
             } else break;
         }
         const text = self.src[start..self.pos];
+        if (self.peek() == 'e' or self.peek() == 'E') {
+            return self.failAt(.syntax, self.pos, "invalid number literal", .{});
+        }
         if (is_float) {
             const f = std.fmt.parseFloat(f64, text) catch
-                return self.failAt(.syntax, start, "invalid number '{s}'", .{text});
+                return self.failAt(.syntax, self.pos, "invalid number literal", .{});
             return .{ .float = f };
         }
         const i = std.fmt.parseInt(i64, text, 10) catch
-            return self.failAt(.syntax, start, "invalid number '{s}'", .{text});
+            return self.failAt(.syntax, self.pos, "invalid number literal", .{});
         return .{ .int = i };
     }
 
@@ -580,9 +589,9 @@ const Parser = struct {
             self.pos += 1;
         }
         if (self.pos == start) {
-            return self.failAt(.syntax, start, "expected a filter argument", .{});
+            return self.failAt(.syntax, start, "expected a filter argument after ':'", .{});
         }
-        return .{ .string = self.src[start..self.pos] };
+        return .{ .bare = self.src[start..self.pos] };
     }
 
     /// A variable path: root name with `.name`, `[n]` and `["key"]` segments.
@@ -601,7 +610,7 @@ const Parser = struct {
                 self.skipSpaces();
                 const name = try self.parseNameChunk(allow_spaces);
                 if (name.len == 0) {
-                    return self.failAt(.syntax, self.pos, "expected a name after '.'", .{});
+                    return self.failAt(.syntax, self.pos, "expected a variable name", .{});
                 }
                 try segments.append(self.alloc(), .{ .dot = name });
             } else if (ch == '[') {
@@ -619,15 +628,18 @@ const Parser = struct {
                     const idx_start = self.pos;
                     while (!self.eof() and std.ascii.isDigit(self.peek())) self.pos += 1;
                     const n = std.fmt.parseInt(usize, self.src[idx_start..self.pos], 10) catch
-                        return self.failAt(.syntax, idx_start, "invalid index", .{});
+                        return self.failAt(.syntax, self.pos, "invalid array index", .{});
                     self.skipSpaces();
                     if (self.peek() != ']') {
-                        return self.failAt(.syntax, self.pos, "expected ']' after index", .{});
+                        return self.failAt(.syntax, self.pos, "expected ']' after array index", .{});
                     }
                     self.pos += 1;
                     try segments.append(self.alloc(), .{ .index = n });
                 } else {
-                    return self.failAt(.syntax, self.pos, "expected an index or quoted key in brackets", .{});
+                    if (self.startsWith("}}") or self.startsWith("%}")) {
+                        return self.failAt(.syntax, self.pos, "unclosed '[' in path", .{});
+                    }
+                    return self.failAt(.syntax, self.pos, "bracket access supports a number or a quoted key", .{});
                 }
             } else break;
         }
@@ -649,6 +661,9 @@ const Parser = struct {
         var name = self.src[start..self.pos];
         if (allow_spaces) {
             name = std.mem.trim(u8, name, " \t");
+            // Keep trailing whitespace outside the path. A property/index
+            // suffix must adjoin the preceding name, not follow a space.
+            self.pos = start + name.len;
         }
         return name;
     }
@@ -662,7 +677,7 @@ const Parser = struct {
     /// True when the cursor is at `inner_end` (modulo trailing spaces).
     fn atInnerEnd(self: *Parser, inner_end: usize) bool {
         var i = self.pos;
-        while (i < inner_end and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
+        while (i < inner_end and std.ascii.isWhitespace(self.src[i])) i += 1;
         return i >= inner_end;
     }
 
@@ -680,7 +695,7 @@ const Parser = struct {
         lhs.* = try self.parseAnd(inner_end);
         while (true) {
             const save = self.pos;
-            self.skipSpaces();
+            self.skipWs();
             var op: ?BinOp = null;
             if (self.startsWith("||")) {
                 self.pos += 2;
@@ -693,7 +708,7 @@ const Parser = struct {
                 self.pos = save;
                 return lhs.*;
             }
-            self.skipSpaces();
+            self.skipWs();
             const rhs = try self.alloc().create(Expr);
             rhs.* = try self.parseAnd(inner_end);
             const node = try self.alloc().create(Expr);
@@ -707,7 +722,7 @@ const Parser = struct {
         lhs.* = try self.parseNot(inner_end);
         while (true) {
             const save = self.pos;
-            self.skipSpaces();
+            self.skipWs();
             var op: ?BinOp = null;
             if (self.startsWith("&&")) {
                 self.pos += 2;
@@ -720,7 +735,7 @@ const Parser = struct {
                 self.pos = save;
                 return lhs.*;
             }
-            self.skipSpaces();
+            self.skipWs();
             const rhs = try self.alloc().create(Expr);
             rhs.* = try self.parseNot(inner_end);
             const node = try self.alloc().create(Expr);
@@ -731,7 +746,7 @@ const Parser = struct {
 
     fn parseNot(self: *Parser, inner_end: usize) Error!Expr {
         const save = self.pos;
-        self.skipSpaces();
+        self.skipWs();
         if (self.peek() == '!' and !(self.pos + 1 < self.src.len and self.src[self.pos + 1] == '=')) {
             self.pos += 1;
             const operand = try self.alloc().create(Expr);
@@ -752,7 +767,7 @@ const Parser = struct {
         const lhs = try self.alloc().create(Expr);
         lhs.* = try self.parsePrimary(inner_end);
         const save = self.pos;
-        self.skipSpaces();
+        self.skipWs();
         var op: ?BinOp = null;
         if (self.startsWith("==")) {
             self.pos += 2;
@@ -780,7 +795,7 @@ const Parser = struct {
             self.pos = save;
             return lhs.*;
         }
-        self.skipSpaces();
+        self.skipWs();
         const rhs = try self.alloc().create(Expr);
         rhs.* = try self.parsePrimary(inner_end);
         const node = try self.alloc().create(Expr);
@@ -789,14 +804,14 @@ const Parser = struct {
     }
 
     fn parsePrimary(self: *Parser, inner_end: usize) Error!Expr {
-        self.skipSpaces();
+        self.skipWs();
         if (self.atInnerEnd(inner_end) or self.peek() == '%') {
             return self.failAt(.syntax, self.pos, "expected a value", .{});
         }
         if (self.peek() == '(') {
             self.pos += 1;
             const e = try self.parseOr(inner_end);
-            self.skipSpaces();
+            self.skipWs();
             if (self.peek() != ')') {
                 return self.failAt(.syntax, self.pos, "expected ')'", .{});
             }
