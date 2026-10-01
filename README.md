@@ -36,8 +36,10 @@ exactly by the fixture corpus:
   bracket key (`metadata["article:section"]`). Missing values render as empty
   text and are falsy in conditions.
 - **Filters** — `{{ value | filter }}` and `{{ value | filter:arg }}`; chains
-  run left to right; at most one argument (quoted string, number, or bare
-  word). String literals may flow through filters (`{{ "Sections" | h2 }}`).
+  run left to right; at most one argument. Quoted strings and numbers are
+  literals. A bare word resolves against the top-level data, falling back to
+  that word only when the key is absent. Null or structured argument values
+  are errors. String literals may flow through filters (`{{ "Sections" | h2 }}`).
 - **Logic** — `{% if %} / {% elseif %} / {% else %} / {% endif %}` with
   `== != < <= > >= contains and/&& or/|| not/!` and parentheses. Truthiness:
   `false`, `null`, undefined, `""`, `0`, `[]` are false; everything else true.
@@ -50,7 +52,10 @@ exactly by the fixture corpus:
   an opening block tag (`if/elseif/else/for`) is consumed; a newline before a
   closing tag is body text; loop iterations are concatenated without a
   separator.
-- **Literals** in expressions — `"strings"`, numbers, `true`, `false`, `null`.
+- **Literals** in expressions — `"strings"`, decimal numbers, `true`, `false`,
+  `null`. Backslash quotes the next byte (`"a\nb"` is `anb`, not a newline);
+  JSON data retains normal JSON escape semantics. Exponent notation in
+  template literals is not supported.
 
 ## Filter registry → Textile mapping
 
@@ -60,7 +65,7 @@ names and emits **Textile**:
 | Filter | Input | Textile emitted | Example |
 |---|---|---|---|
 | `h1` … `h6` | text | `h1. text` … `h6. text` | `{{ title \| h1 }}` → `h1. The Machine Stops` |
-| `blockquote` | text (per line) | `bq. ` prefix on every line | `bq. To be, or not to be.` |
+| `blockquote` | single-line text | `bq. ` prefix | `bq. To be, or not to be.` |
 | `bold` | single-line text | `*text*` | `*watch out*` |
 | `italic` | single-line text | `_text_` | `_very_` |
 | `list` | array | `* item` lines; nested arrays deepen (`**`, `***`, max 3) | `* one` / `** two` |
@@ -76,11 +81,13 @@ Notes:
   ignores it — Textile's inline `@…@` has no language annotation.
 - `link` refuses `javascript:`, `data:` and `vbscript:` destinations (upstream
   0.4.0 URL-scheme hardening, carried over).
-- `bold`, `italic`, `code` and `link`'s link text must be single-line;
+- Headings, `blockquote`, `bold`, `italic`, `code` and `link`'s text must be single-line;
   multi-line input is a render error (`codeblock` exists for blocks).
-- Non-string filter input is serialized first (numbers as text, objects as
-  compact JSON). A rendered object interpolates as compact JSON:
-  `{"k":1,"s":"x"}`.
+- Text filters accept scalars, not objects or arrays. Structured values
+  still interpolate directly as compact JSON: `{"k":1,"s":"x"}`.
+- `link` rejects empty URLs, whitespace or quotes in URLs, and quotes in
+  link text. Tables need at least one row and one column; cells must be
+  scalar and cannot contain `|` or LF. List items cannot be objects.
 - Data is inserted verbatim; Textile-significant characters inside data
   (`*`, `_`, `|`, …) can alter how a Textile renderer reads the result. No
   escaping layer is attempted — a documented limitation.
@@ -123,6 +130,42 @@ it corrupts one expected file with its raw template and another with Markdown,
 shows the suite fail in both cases, restores the corpus via git, and shows it
 green again — so "fail against passthrough" is demonstrated, not assumed.
 
+### Black-box differential conformance
+
+```sh
+python3 tools/build_oracle.py              # requires network, Git, Zig 0.16.0
+zig build -Doptimize=ReleaseSafe
+python3 -m unittest discover -s tools -p 'test_*.py' -v
+python3 tools/differential.py              # whole shared corpus, zero divergences required
+python3 tools/differential.py --report differential-report.json
+```
+
+The oracle is `drawmeanelephant/k4o`, pinned by `tools/k4o-revision.txt`.
+The builder compiles a disposable checkout without displaying or inspecting
+source or compiler diagnostics, deletes that checkout, and keeps only its
+executable and revision stamp in ignored `.oracle/`. No oracle code is
+vendored, imported, copied, or used by 2nap's build/runtime.
+
+The shared corpus includes **every existing fixture and example unchanged**,
+the inline tests' template cases, README-derived type/filter/path/whitespace
+matrices, numeric boundaries, malformed templates, and deterministic generated
+logic/loop combinations (seed `0x2A4`). The entire corpus runs on both
+`ubuntu-latest` and `macos-latest` in `.github/workflows/differential.yml` on
+pushes and pull requests.
+
+Stdout is compared as raw bytes, with no trimming, newline conversion, or
+Unicode normalization. Exit status and diagnostics also match; only the CLI
+envelopes `knap-textile: error: ` and `k4o: ` are removed from stderr.
+Crashes, timeouts, launch failures, partial output on errors, and an empty
+selection fail the run. `--match` selects case names for diagnosis only;
+CI always runs everything. `--candidate` and `--oracle` accept other binaries.
+
+Scope is shared template behavior using `render` and optional `--data`,
+with small outputs below k4o's output cap. CLI-only options such as k4o's
+`--max-output`/`--help`, and 2nap-only extensions (`code_block` and an optional
+ignored `code` argument), are not claims of cross-implementation parity.
+Observed ambiguous decisions are recorded in `DIFFERENTIAL.md`.
+
 ## Clean-room session record
 
 - **Date:** 2026-09-28
@@ -151,6 +194,12 @@ Doc-derived rules the corpus then pinned harder: exact whitespace handling,
 `codeblock` spelling (docs say `code_block`), error messages/columns, list
 nesting depth 3, single-line scope of `bold`.
 
+**Differential session, 2026-09-30:** k4o was used solely as a black-box
+executable. The only k4o file read was its public `README.md`, snapshotted in
+`.cleanroom/k4o-README.md` at `942ebf32ed89eca8d195b04068118a9ee62706c6`
+(SHA-256 `ab057f280a599993602aee027ba5b381de9b834e4a5171db40796b8f4f30d47a`).
+Implementation changes came from input/output experiments, never its source.
+
 ## Repository layout
 
 ```
@@ -164,6 +213,11 @@ tests.zig          fixture harness + invariants + unit checks
 fixtures/          ground-truth corpus (reused data)
 examples/          heading / list / table demos
 tools/verify.sh    full verification incl. red-green proof
+tools/differential.py       byte-exact black-box comparison (shared corpus)
+tools/differential_corpus.py fixture + generated differential inputs
+tools/build_oracle.py       disposable opaque build of the pinned oracle
+DIFFERENTIAL.md             observed behavior and ambiguity decisions
+.github/workflows/          Linux/macOS differential CI
 .cleanroom/        hashed doc snapshots (provenance evidence)
 ```
 

@@ -12,10 +12,11 @@
 | 7 | Harness + invariant guards + verify.sh red-green | done | commit f477b61; VERIFICATION.md pass 1 (10/10) |
 | 8 | README + examples + VERIFICATION.md | done | commit 358e2d1 |
 | 9 | Second pass: clean rebuild, acceptance audit | done | VERIFICATION.md pass 2 (11/11) + audit table |
+| 10 | Black-box k4o differential conformance | done locally | 2,703 cases, zero divergences; baseline 233 divergences; 17 Zig + 11 harness tests; Linux/macOS CI configured |
 
 Rules: a phase moves to `done` only with evidence committed alongside it.
 
-Final state: `zig build test` 11/11; `tools/verify.sh` 11/11 including
+Original milestone state: `zig build test` 11/11; `tools/verify.sh` 11/11 including
 CLI byte-exactness on all 41 positive fixtures and the red-green mutant
 proof. Both passes ran against clean builds (pass 2 after `rm -rf
 .zig-cache zig-out`).

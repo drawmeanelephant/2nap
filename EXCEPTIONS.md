@@ -27,14 +27,15 @@ each with a reason.
    fixture. Invalid-JSON handling is instead demonstrated in verify.sh with a
    generated bad file (exit 1, empty stdout, `invalid JSON data in …`).
 8. **Corpus-silent behaviors chosen deliberately** (none pinned by any
-   fixture, all documented in README):
+   original fixture; the 2026-09-30 differential corpus supersedes the choices
+   below where noted):
    - `item_index` loop variable not implemented (ambiguous doc wording,
      untested).
    - Floats serialize via shortest round-trip form; integers as decimal.
    - Ordering comparisons (`< <= > >=`) across mismatched types are false
      rather than errors; `contains` outside string/array pairs is false.
    - `code` and `link` link-text enforce single-line like `bold`.
-   - `h1`–`h6` prefix the value without a multi-line check.
+   - `h1`–`h6` now require single-line scalar text, matching the black-box oracle.
    - `link` refuses `javascript:`/`data:`/`vbscript:` destinations (upstream
      0.4.0 hardening spirit); no fixture exercises this.
 9. **CLI error prefix.** The CLI wraps every pinned diagnostic as
@@ -48,3 +49,8 @@ each with a reason.
     file; template parsing therefore happens before data loading, and the
     harness invokes those cases with an implicit empty object. The task's
     invocation form (`--data data.json`) remains the documented primary use.
+12. **Black-box parity clarifications (2026-09-30).** `DIFFERENTIAL.md` records
+    README-derived rules and executable observations that supersede earlier
+    corpus-silent choices. Existing fixtures are unchanged. Stderr's
+    program-specific envelope is the only differential normalization;
+    stdout is always compared byte-for-byte.
