@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
 
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    run_cmd.addPassthruArgs();
     const run_step = b.step("run", "Render a template (pass args after --)");
     run_step.dependOn(&run_cmd.step);
 
@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_tests = b.addRunArtifact(tests);
+    run_tests.has_side_effects = true;
     const test_step = b.step("test", "Run fixture corpus tests");
     test_step.dependOn(&run_tests.step);
 }

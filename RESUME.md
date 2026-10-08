@@ -6,7 +6,7 @@ committed. Restore point: tag `restore-point/baseline`.
 If you are picking this project up cold:
 
 1. Read PROGRESS.md (ledger) and VERIFICATION.md (raw evidence) first.
-2. Toolchain: `zig` 0.16.0 (Homebrew, `/opt/homebrew/bin/zig`), git configured.
+2. Toolchain: `zig` 0.17.0 (Homebrew, `/opt/homebrew/bin/zig`), git configured.
 3. Build/test: `zig build && zig build test`. Full verification:
    `tools/verify.sh` (release build, suite, CLI checks incl. byte-exactness on
    all fixtures, red-green mutant proof, example renders).

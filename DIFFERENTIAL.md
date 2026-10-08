@@ -1,7 +1,7 @@
 # Black-box conformance decisions
 
 Oracle: `drawmeanelephant/k4o` at
-`942ebf32ed89eca8d195b04068118a9ee62706c6`, Zig 0.16.0.
+`942ebf32ed89eca8d195b04068118a9ee62706c6`, Zig 0.17.0.
 Evidence: its public README and executable responses to the cases in
 `tools/differential_corpus.py`. No k4o source was read.
 
