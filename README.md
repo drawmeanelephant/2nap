@@ -4,7 +4,7 @@ A Knap template engine that renders templates to **Textile**, not Markdown.
 Template + JSON data in, Textile bytes out. The cult's machinery, bent to serve
 Dean Allen's ghost.
 
-- Zig 0.16, standard library only. No npm, no network at build or run time,
+- Zig 0.17, standard library only. No npm, no network at build or run time,
   no wrapping the official knap package.
 - CLI: `knap-textile render template.knap --data data.json` → Textile on stdout.
 - Non-zero exit with a message on template syntax errors; never emits
@@ -133,7 +133,7 @@ green again — so "fail against passthrough" is demonstrated, not assumed.
 ### Black-box differential conformance
 
 ```sh
-python3 tools/build_oracle.py              # requires network, Git, Zig 0.16.0
+python3 tools/build_oracle.py              # requires network, Git, Zig 0.17.0
 zig build -Doptimize=ReleaseSafe
 python3 -m unittest discover -s tools -p 'test_*.py' -v
 python3 tools/differential.py              # whole shared corpus, zero divergences required
